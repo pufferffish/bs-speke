@@ -18,33 +18,39 @@ type HTTPHandler struct {
 	bspServer   *bs_speke.BSSpekeServer
 }
 
-func (h *HTTPHandler) handleRegisterStep1(w http.ResponseWriter, r map[string]string) {
+func parseBlindSaltRequest(r map[string]string) (username string, saltPoint *ristretto.Point, err error) {
 	username, ok := r["username"]
 	if !ok {
-		w.WriteHeader(http.StatusBadRequest)
-		return
+		return "", nil, fmt.Errorf("missing username")
 	}
 
 	saltEncoded, ok := r["salt"]
 	if !ok {
-		w.WriteHeader(http.StatusBadRequest)
-		return
+		return "", nil, fmt.Errorf("missing salt")
 	}
 
 	saltBlob, err := base64.RawURLEncoding.DecodeString(saltEncoded)
 	if err != nil {
-		log.Println(err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+		return "", nil, err
 	}
 
 	var salt ristretto.Point
 	if !salt.SetBytes((*[32]byte)(saltBlob)) {
+		return "", nil, fmt.Errorf("invalid salt")
+	}
+
+	return username, &salt, nil
+}
+
+func (h *HTTPHandler) handleRegisterStep1(w http.ResponseWriter, r map[string]string) {
+	username, salt, err := parseBlindSaltRequest(r)
+	if err != nil {
+		log.Println(err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	response, err := h.bspServer.RegistrationStep1([]byte(username), &salt)
+	response, err := h.bspServer.RegistrationStep1([]byte(username), salt)
 	if err != nil {
 		log.Println(err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -122,6 +128,33 @@ func (h *HTTPHandler) handleRegisterStep2(w http.ResponseWriter, r map[string]st
 	_, _ = w.Write([]byte(`{"status":"Account registered"}`))
 }
 
+func (h *HTTPHandler) handleLoginStep1(w http.ResponseWriter, r map[string]string) {
+	username, salt, err := parseBlindSaltRequest(r)
+	if err != nil {
+		log.Println(err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	response, err := h.bspServer.LoginStep1([]byte(username), salt)
+	if err != nil {
+		log.Println(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse := make(map[string]string)
+	jsonResponse["salt"] = base64.RawURLEncoding.EncodeToString(response.BlindSalt)
+	jsonResponse["blob"] = base64.RawURLEncoding.EncodeToString(response.Blob)
+	jsonResponse["publicKey"] = base64.RawURLEncoding.EncodeToString(response.PublicKey)
+	err = json.NewEncoder(w).Encode(jsonResponse)
+	if err != nil {
+		log.Println(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+}
+
 func (h *HTTPHandler) handlePost(w http.ResponseWriter, path string, r map[string]string) {
 	w.Header().Set("Content-Type", "application/json")
 	switch path {
@@ -129,6 +162,8 @@ func (h *HTTPHandler) handlePost(w http.ResponseWriter, path string, r map[strin
 		h.handleRegisterStep1(w, r)
 	case "/register/step2":
 		h.handleRegisterStep2(w, r)
+	case "/login/step1":
+		h.handleLoginStep1(w, r)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -183,6 +218,22 @@ func main() {
 		}
 		cache.Set(string(username), record, 30*time.Minute)
 		return nil
+	}
+	bspServer.GetUserSaltAndGenerator = func(username []byte) ([]byte, []byte, error) {
+		usernameStr := string(username)
+		if record, found := cache.Get(usernameStr); found {
+			return record.(UserRecord).salt, record.(UserRecord).generator, nil
+		} else {
+			return nil, nil, fmt.Errorf("User not found")
+		}
+	}
+	bspServer.GetUserPublicKey = func(username []byte) ([]byte, error) {
+		usernameStr := string(username)
+		if record, found := cache.Get(usernameStr); found {
+			return record.(UserRecord).publicKey, nil
+		} else {
+			return nil, fmt.Errorf("User not found")
+		}
 	}
 	handler := HTTPHandler{
 		fileHandler: http.FileServer(http.Dir("./cmd/")),

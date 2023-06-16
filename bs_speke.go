@@ -12,6 +12,7 @@ import (
 
 const (
 	registrationStep1Domain = "registration-step1"
+	loginStep1Domain        = "login-step1"
 )
 
 type BSSpekeServer struct {
@@ -23,6 +24,10 @@ type BSSpekeServer struct {
 	StaticKey []byte
 	// SaveUser is a function that saves a user to the database
 	SaveUser func(username, salt, generator, publicKey []byte) error
+	// GetUserSaltAndGenerator is a function that retrieves a user's salt and generator from the database
+	GetUserSaltAndGenerator func(username []byte) (salt, generator []byte, err error)
+	// GetUserPublicKey is a function that retrieves a user's public key from the database
+	GetUserPublicKey func(username []byte) (publicKey []byte, err error)
 }
 
 type RegistrationStep1Response struct {
@@ -32,9 +37,23 @@ type RegistrationStep1Response struct {
 	BlindSalt []byte
 }
 
+type LoginStep1Response struct {
+	// Blob is a blob which the client should use for registration step 2
+	Blob []byte
+	// BlindSalt is a blinded salt that the client should use for key derivation
+	BlindSalt []byte
+	// PublicKey is the server's ephemeral public key
+	PublicKey []byte
+}
+
 type RegistrationStep1Blob struct {
 	ExpireEpoch uint64
 	Salt        []byte
+}
+
+type LoginStep1Blob struct {
+	ExpireEpoch uint64
+	PrivateKey  []byte
 }
 
 func NewBSSpekeServer(serverDomain string, staticKey []byte) *BSSpekeServer {
@@ -127,4 +146,33 @@ func (server *BSSpekeServer) RegistrationStep2(username, blob []byte, generator,
 	}
 
 	return server.SaveUser(username, body.Salt, generator.Bytes(), publicKey.Bytes())
+}
+
+func (server *BSSpekeServer) LoginStep1(username []byte, blindSalt *ristretto.Point) (*LoginStep1Response, error) {
+	salt, generator, err := server.GetUserSaltAndGenerator(username)
+	if err != nil {
+		return nil, err
+	}
+
+	var s, r ristretto.Scalar
+	var g ristretto.Point
+	if !g.SetBytes((*[32]byte)(generator)) {
+		return nil, errors.New("invalid generator")
+	}
+	s.SetBytes((*[32]byte)(salt))
+	r.Rand()
+	blindSalt.ScalarMult(blindSalt, &s)
+	body := &LoginStep1Blob{
+		ExpireEpoch: uint64(time.Now().Unix()) + 60,
+		PrivateKey:  r.Bytes(),
+	}
+	blob, err := server.encryptPacket(loginStep1Domain, body, username)
+	if err != nil {
+		return nil, err
+	}
+	return &LoginStep1Response{
+		Blob:      blob,
+		BlindSalt: blindSalt.Bytes(),
+		PublicKey: g.ScalarMult(&g, &r).Bytes(),
+	}, nil
 }
