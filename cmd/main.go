@@ -16,8 +16,19 @@ type HTTPHandler struct {
 }
 
 func (h *HTTPHandler) handleRegisterStep1(w http.ResponseWriter, r map[string]string) {
-	username := []byte(r["username"])
-	saltBlob, err := base64.RawURLEncoding.DecodeString(r["salt"])
+	username, ok := r["username"]
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	saltEncoded, ok := r["salt"]
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	saltBlob, err := base64.RawURLEncoding.DecodeString(saltEncoded)
 	if err != nil {
 		log.Println(err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -30,7 +41,7 @@ func (h *HTTPHandler) handleRegisterStep1(w http.ResponseWriter, r map[string]st
 		return
 	}
 
-	response, err := h.bspServer.RegistrationStep1(username, &salt)
+	response, err := h.bspServer.RegistrationStep1([]byte(username), &salt)
 	if err != nil {
 		log.Println(err)
 		w.WriteHeader(http.StatusInternalServerError)

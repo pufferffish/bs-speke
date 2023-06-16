@@ -79,6 +79,8 @@
 
 <script>
     const serverID = "test server";
+    const generatorModifier = "generator modifier";
+    const privateKeyModifier = "private key modifier";
     let sodium = undefined;
     window.sodium = {
         onload: function (sodium_) {
@@ -112,23 +114,57 @@
         return [request, mask];
     }
 
+    function registerStep2(username, password, mask, salt, blob) {
+        salt = sodium.from_base64(salt);
+
+        if (!sodium.crypto_core_ristretto255_is_valid_point(salt)) {
+            throw "invalid salt";
+        }
+
+        let blindSalt = sodium.crypto_scalarmult_ristretto255(mask, salt);
+        blindSalt = sodium.crypto_generichash(sodium.crypto_pwhash_SALTBYTES, blindSalt, sodium.from_string(serverID));
+
+        let keyMaterial = sodium.crypto_pwhash(64, sodium.from_string(password), blindSalt,
+            sodium.crypto_pwhash_OPSLIMIT_INTERACTIVE, sodium.crypto_pwhash_MEMLIMIT_MODERATE, sodium.crypto_pwhash_ALG_DEFAULT);
+
+        let generator = sodium.crypto_generichash(sodium.crypto_core_ristretto255_HASHBYTES,
+            keyMaterial, sodium.from_string(generatorModifier));
+        generator = sodium.crypto_core_ristretto255_from_hash(generator);
+
+        let privateKey = sodium.crypto_generichash(sodium.crypto_core_ristretto255_HASHBYTES,
+            keyMaterial, sodium.from_string(privateKeyModifier));
+        privateKey = sodium.crypto_core_ristretto255_scalar_reduce(privateKey);
+
+        sodium.memzero(keyMaterial);
+
+        let publicKey = sodium.crypto_scalarmult_ristretto255(privateKey, generator);
+        sodium.memzero(privateKey);
+
+        return {
+            "username": username,
+            "generator": sodium.to_base64(generator),
+            "publicKey": sodium.to_base64(publicKey),
+            "blob": blob,
+        };
+    }
+
     async function register(e) {
         e.preventDefault();
         let [username, password] = credentials();
         console.log('register ' + username + " " + password);
-        let [request, mask] = registerStep1(username, password)
+        let [request1, mask] = registerStep1(username, password)
         console.log("mask:", sodium.to_base64(mask));
         let resp = await fetch("/register/step1", {
             method: "POST",
-            body: JSON.stringify(request),
-        })
+            body: JSON.stringify(request1),
+        });
         let respJson = await resp.json();
-        let salt = sodium.from_base64(respJson.salt);
-        if (!sodium.crypto_core_ristretto255_is_valid_point(salt)) {
-            throw "invalid salt";
-        }
-        let blindSalt = sodium.crypto_scalarmult_ristretto255(mask, salt);
-        console.log("blind salt:", sodium.to_base64(blindSalt));
+        let request2 = registerStep2(username, password, mask, respJson.salt, respJson.blob);
+        resp = await fetch("/register/step2", {
+            method: "POST",
+            body: JSON.stringify(request2),
+        });
+       respJson = await resp.json();
     }
 
     document.getElementById('register').addEventListener('click', register);
