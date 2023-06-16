@@ -6,6 +6,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"github.com/bwesterb/go-ristretto"
+	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/chacha20poly1305"
 	"time"
 )
@@ -54,6 +55,7 @@ type RegistrationStep1Blob struct {
 type LoginStep1Blob struct {
 	ExpireEpoch uint64
 	PrivateKey  []byte
+	UserExists  byte
 }
 
 func NewBSSpekeServer(serverDomain string, staticKey []byte) *BSSpekeServer {
@@ -149,22 +151,32 @@ func (server *BSSpekeServer) RegistrationStep2(username, blob []byte, generator,
 }
 
 func (server *BSSpekeServer) LoginStep1(username []byte, blindSalt *ristretto.Point) (*LoginStep1Response, error) {
-	salt, generator, err := server.GetUserSaltAndGenerator(username)
-	if err != nil {
-		return nil, err
-	}
-
 	var s, r ristretto.Scalar
 	var g ristretto.Point
-	if !g.SetBytes((*[32]byte)(generator)) {
-		return nil, errors.New("invalid generator")
+	var userExists byte
+
+	salt, generator, err := server.GetUserSaltAndGenerator(username)
+	if err != nil {
+		// generate fake data to not leak whether the user exists
+		mac, _ := blake2b.New256(server.StaticKey)
+		key := mac.Sum(username)
+		g.SetElligator((*[32]byte)(key))
+		s.Derive(key)
+		userExists = 0
+	} else {
+		if !g.SetBytes((*[32]byte)(generator)) {
+			return nil, errors.New("invalid generator")
+		}
+		s.SetBytes((*[32]byte)(salt))
+		userExists = 1
 	}
-	s.SetBytes((*[32]byte)(salt))
+
 	r.Rand()
 	blindSalt.ScalarMult(blindSalt, &s)
 	body := &LoginStep1Blob{
 		ExpireEpoch: uint64(time.Now().Unix()) + 60,
 		PrivateKey:  r.Bytes(),
+		UserExists:  userExists,
 	}
 	blob, err := server.encryptPacket(loginStep1Domain, body, username)
 	if err != nil {
