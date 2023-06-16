@@ -44,7 +44,7 @@
     <div class="row">
         <div class="col-md-6 offset-md-3">
             <h2 class="text-center text-dark mt-5">Login Form</h2>
-            <div class="text-center mb-5 text-dark">Made with bootstrap</div>
+            <div class="text-center mb-5 text-dark">Accounts created will be saved for 30 minutes</div>
             <div class="card my-5">
 
                 <form class="card-body cardbody-color p-lg-5">
@@ -56,7 +56,8 @@
                     </div>
 
                     <div class="mb-3">
-                        <input type="text" class="form-control" id="username" aria-describedby="emailHelp" placeholder="Username">
+                        <input type="text" class="form-control" id="username" aria-describedby="emailHelp"
+                               placeholder="Username">
                     </div>
                     <div class="mb-3">
                         <input type="password" class="form-control" id="password" placeholder="Password">
@@ -67,8 +68,7 @@
                     <div class="text-center">
                         <button id="register" class="btn btn-color px-5 mb-3 w-100">Register</button>
                     </div>
-                    <div id="emailHelp" class="form-text text-center mb-5 text-dark">
-                        Not Registered?
+                    <div id="statusMessage" class="form-text text-center mb-5 text-dark">
                     </div>
                 </form>
             </div>
@@ -150,21 +150,26 @@
 
     async function register(e) {
         e.preventDefault();
-        let [username, password] = credentials();
-        console.log('register ' + username + " " + password);
-        let [request1, mask] = registerStep1(username, password)
-        console.log("mask:", sodium.to_base64(mask));
-        let resp = await fetch("/register/step1", {
-            method: "POST",
-            body: JSON.stringify(request1),
-        });
-        let respJson = await resp.json();
-        let request2 = registerStep2(username, password, mask, respJson.salt, respJson.blob);
-        resp = await fetch("/register/step2", {
-            method: "POST",
-            body: JSON.stringify(request2),
-        });
-       respJson = await resp.json();
+        try {
+            let [username, password] = credentials();
+            console.log('register ' + username + " " + password);
+            let [request1, mask] = registerStep1(username, password)
+            console.log("mask:", sodium.to_base64(mask));
+            let resp = await fetch("/register/step1", {
+                method: "POST",
+                body: JSON.stringify(request1),
+            });
+            let respJson = await resp.json();
+            let request2 = registerStep2(username, password, mask, respJson.salt, respJson.blob);
+            resp = await fetch("/register/step2", {
+                method: "POST",
+                body: JSON.stringify(request2),
+            });
+            respJson = await resp.json();
+            document.getElementById('statusMessage').innerText = respJson.status;
+        } catch (e) {
+            document.getElementById('statusMessage').innerText = "An error occurred";
+        }
     }
 
     document.getElementById('register').addEventListener('click', register);

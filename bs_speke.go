@@ -21,11 +21,13 @@ type BSSpekeServer struct {
 	EphemeralKey []byte
 	// StaticKey is a static private key that is used to generate fake user salt for non-existent users
 	StaticKey []byte
+	// SaveUser is a function that saves a user to the database
+	SaveUser func(username, salt, generator, publicKey []byte) error
 }
 
 type RegistrationStep1Response struct {
-	// Packet is a blob which the client should use for registration step 2
-	Packet []byte
+	// Blob is a blob which the client should use for registration step 2
+	Blob []byte
 	// BlindSalt is a blinded salt that the client should use for key derivation
 	BlindSalt []byte
 }
@@ -104,12 +106,25 @@ func (server *BSSpekeServer) RegistrationStep1(username []byte, blindSalt *ristr
 		ExpireEpoch: uint64(time.Now().Unix()) + 60,
 		Salt:        r.Bytes(),
 	}
-	packet, err := server.encryptPacket(registrationStep1Domain, body, username)
+	blob, err := server.encryptPacket(registrationStep1Domain, body, username)
 	if err != nil {
 		return nil, err
 	}
 	return &RegistrationStep1Response{
-		Packet:    packet,
+		Blob:      blob,
 		BlindSalt: blindSalt.Bytes(),
 	}, nil
+}
+
+func (server *BSSpekeServer) RegistrationStep2(username, blob []byte, generator, publicKey *ristretto.Point) error {
+	var body RegistrationStep1Blob
+	err := server.decryptPacket(registrationStep1Domain, blob, username, &body)
+	if err != nil {
+		return err
+	}
+	if uint64(time.Now().Unix()) > body.ExpireEpoch {
+		return errors.New("registration blob expired")
+	}
+
+	return server.SaveUser(username, body.Salt, generator.Bytes(), publicKey.Bytes())
 }

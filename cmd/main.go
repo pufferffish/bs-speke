@@ -3,11 +3,14 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"github.com/bwesterb/go-ristretto"
+	"github.com/patrickmn/go-cache"
 	"github.com/pufferfish/bs-speke"
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
 type HTTPHandler struct {
@@ -50,7 +53,7 @@ func (h *HTTPHandler) handleRegisterStep1(w http.ResponseWriter, r map[string]st
 
 	jsonResponse := make(map[string]string)
 	jsonResponse["salt"] = base64.RawURLEncoding.EncodeToString(response.BlindSalt)
-	jsonResponse["blob"] = base64.RawURLEncoding.EncodeToString(response.Packet)
+	jsonResponse["blob"] = base64.RawURLEncoding.EncodeToString(response.Blob)
 	err = json.NewEncoder(w).Encode(jsonResponse)
 	if err != nil {
 		log.Println(err)
@@ -59,11 +62,73 @@ func (h *HTTPHandler) handleRegisterStep1(w http.ResponseWriter, r map[string]st
 	}
 }
 
+func (h *HTTPHandler) handleRegisterStep2(w http.ResponseWriter, r map[string]string) {
+	respondError := func(err error) {
+		log.Println(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		jsonResponse := make(map[string]string)
+		jsonResponse["status"] = err.Error()
+		err = json.NewEncoder(w).Encode(jsonResponse)
+	}
+
+	checkAndDecode := func(key string) ([]byte, error) {
+		value, ok := r[key]
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			return nil, fmt.Errorf("missing %s", key)
+		}
+		decoded, err := base64.RawURLEncoding.DecodeString(value)
+		if err != nil {
+			respondError(err)
+			return nil, err
+		}
+		return decoded, nil
+	}
+
+	username, ok := r["username"]
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	blob, err := checkAndDecode("blob")
+	if err != nil {
+		return
+	}
+
+	generatorBytes, err := checkAndDecode("generator")
+	if err != nil {
+		return
+	}
+
+	publicKeyBytes, err := checkAndDecode("publicKey")
+	if err != nil {
+		return
+	}
+
+	var generatorPoint, publicKeyPoint ristretto.Point
+	if !generatorPoint.SetBytes((*[32]byte)(generatorBytes)) || !publicKeyPoint.SetBytes((*[32]byte)(publicKeyBytes)) {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	err = h.bspServer.RegistrationStep2([]byte(username), blob, &generatorPoint, &publicKeyPoint)
+	if err != nil {
+		respondError(err)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"Account registered"}`))
+}
+
 func (h *HTTPHandler) handlePost(w http.ResponseWriter, path string, r map[string]string) {
 	w.Header().Set("Content-Type", "application/json")
 	switch path {
 	case "/register/step1":
 		h.handleRegisterStep1(w, r)
+	case "/register/step2":
+		h.handleRegisterStep2(w, r)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -96,10 +161,32 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type UserRecord struct {
+	username                   string
+	salt, generator, publicKey []byte
+}
+
 func main() {
+	bspServer := bs_speke.NewBSSpekeServer("test server", []byte("static key"))
+	cache := cache.New(30*time.Minute, 5*time.Minute)
+	bspServer.SaveUser = func(username, salt, generator, publicKey []byte) error {
+		usernameStr := string(username)
+		if _, found := cache.Get(usernameStr); found {
+			return fmt.Errorf("User already exists")
+		}
+		fmt.Printf("SaveUser: %s\n", usernameStr)
+		record := UserRecord{
+			username:  usernameStr,
+			salt:      salt,
+			generator: generator,
+			publicKey: publicKey,
+		}
+		cache.Set(string(username), record, 30*time.Minute)
+		return nil
+	}
 	handler := HTTPHandler{
 		fileHandler: http.FileServer(http.Dir("./cmd/")),
-		bspServer:   bs_speke.NewBSSpekeServer("test server", []byte("static key")),
+		bspServer:   bspServer,
 	}
 	log.Fatal(http.ListenAndServe(":9009", &handler))
 }
