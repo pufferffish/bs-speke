@@ -18,6 +18,28 @@ type HTTPHandler struct {
 	bspServer   *bs_speke.BSSpekeServer
 }
 
+func respondError(w http.ResponseWriter, err error) {
+	log.Println(err)
+	w.WriteHeader(http.StatusInternalServerError)
+	jsonResponse := make(map[string]string)
+	jsonResponse["status"] = err.Error()
+	err = json.NewEncoder(w).Encode(jsonResponse)
+}
+
+func checkAndDecode(w http.ResponseWriter, r map[string]string, key string) ([]byte, error) {
+	value, ok := r[key]
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		return nil, fmt.Errorf("missing %s", key)
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		respondError(w, err)
+		return nil, err
+	}
+	return decoded, nil
+}
+
 func parseBlindSaltRequest(r map[string]string) (username string, saltPoint *ristretto.Point, err error) {
 	username, ok := r["username"]
 	if !ok {
@@ -69,45 +91,23 @@ func (h *HTTPHandler) handleRegisterStep1(w http.ResponseWriter, r map[string]st
 }
 
 func (h *HTTPHandler) handleRegisterStep2(w http.ResponseWriter, r map[string]string) {
-	respondError := func(err error) {
-		log.Println(err)
-		w.WriteHeader(http.StatusInternalServerError)
-		jsonResponse := make(map[string]string)
-		jsonResponse["status"] = err.Error()
-		err = json.NewEncoder(w).Encode(jsonResponse)
-	}
-
-	checkAndDecode := func(key string) ([]byte, error) {
-		value, ok := r[key]
-		if !ok {
-			w.WriteHeader(http.StatusBadRequest)
-			return nil, fmt.Errorf("missing %s", key)
-		}
-		decoded, err := base64.RawURLEncoding.DecodeString(value)
-		if err != nil {
-			respondError(err)
-			return nil, err
-		}
-		return decoded, nil
-	}
-
 	username, ok := r["username"]
 	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	blob, err := checkAndDecode("blob")
+	blob, err := checkAndDecode(w, r, "blob")
 	if err != nil {
 		return
 	}
 
-	generatorBytes, err := checkAndDecode("generator")
+	generatorBytes, err := checkAndDecode(w, r, "generator")
 	if err != nil {
 		return
 	}
 
-	publicKeyBytes, err := checkAndDecode("publicKey")
+	publicKeyBytes, err := checkAndDecode(w, r, "publicKey")
 	if err != nil {
 		return
 	}
@@ -120,7 +120,7 @@ func (h *HTTPHandler) handleRegisterStep2(w http.ResponseWriter, r map[string]st
 
 	err = h.bspServer.RegistrationStep2([]byte(username), blob, &generatorPoint, &publicKeyPoint)
 	if err != nil {
-		respondError(err)
+		respondError(w, err)
 		return
 	}
 
@@ -155,6 +155,45 @@ func (h *HTTPHandler) handleLoginStep1(w http.ResponseWriter, r map[string]strin
 	}
 }
 
+func (h *HTTPHandler) handleLoginStep2(w http.ResponseWriter, r map[string]string) {
+	username, ok := r["username"]
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	blob, err := checkAndDecode(w, r, "blob")
+	if err != nil {
+		return
+	}
+
+	ephemeralPublic, err := checkAndDecode(w, r, "ephemeralPublic")
+	if err != nil {
+		return
+	}
+
+	verifier, err := checkAndDecode(w, r, "verifier")
+	if err != nil {
+		return
+	}
+
+	var ephemeralPublicPoint ristretto.Point
+	if !ephemeralPublicPoint.SetBytes((*[32]byte)(ephemeralPublic)) {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	_, _, err = h.bspServer.LoginStep2([]byte(username), verifier, blob, &ephemeralPublicPoint)
+	if err != nil {
+		log.Println(err)
+		respondError(w, fmt.Errorf("Invalid credentials"))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"Correct credentials"}`))
+}
+
 func (h *HTTPHandler) handlePost(w http.ResponseWriter, path string, r map[string]string) {
 	w.Header().Set("Content-Type", "application/json")
 	switch path {
@@ -164,6 +203,8 @@ func (h *HTTPHandler) handlePost(w http.ResponseWriter, path string, r map[strin
 		h.handleRegisterStep2(w, r)
 	case "/login/step1":
 		h.handleLoginStep1(w, r)
+	case "/login/step2":
+		h.handleLoginStep2(w, r)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}

@@ -146,7 +146,6 @@
 
     function craftRegisterRequest(username, password, mask, salt, blob) {
         let secrets = deriveSecrets(password, mask, salt);
-        console.log(secrets);
         return {
             "username": username,
             "generator": sodium.to_base64(secrets.generator),
@@ -163,15 +162,19 @@
 
         let secrets = deriveSecrets(password, mask, salt);
         let ephemeralSecret = sodium.crypto_core_ristretto255_scalar_random();
-        let ephemeralPublic = sodium.crypto_scalarmult_ristretto255_base(ephemeralSecret);
+        let ephemeralPublic = sodium.crypto_scalarmult_ristretto255(ephemeralSecret, secrets.generator);
         let sharedSecret = new Uint8Array(sodium.crypto_core_ristretto255_BYTES * 2);
-        sharedSecret.set(sodium.crypto_scalarmult_ristretto255(ephemeralSecret, serverPublicKey));
-        sharedSecret.set(sodium.crypto_scalarmult_ristretto255(secrets.privateKey, serverPublicKey), sodium.crypto_core_ristretto255_BYTES);
+
+        let ephemeralToSeverStatic = sodium.crypto_scalarmult_ristretto255(ephemeralSecret, serverPublicKey);
+        let userStaticToServerStatic = sodium.crypto_scalarmult_ristretto255(secrets.privateKey, serverPublicKey);
+
+        sharedSecret.set(ephemeralToSeverStatic, 0);
+        sharedSecret.set(userStaticToServerStatic, sodium.crypto_core_ristretto255_BYTES);
         sharedSecret = sodium.crypto_generichash(64, serverID, sharedSecret);
 
-        let verifierC = sodium.crypto_generichash(32, sharedSecret, sodium.from_string(clientVerifierModifier));
-        let sessionKey = sodium.crypto_generichash(sodium.crypto_aead_xchacha20poly1305_ietf_KEYBYTES, sharedSecret, sodium.from_string(sessionKeyModifier));
-        let iv = sodium.crypto_generichash(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES, sharedSecret, sodium.from_string(sessionIVModifier));
+        let verifierC = sodium.crypto_generichash(32, clientVerifierModifier, sharedSecret);
+        let sessionKey = sodium.crypto_generichash(sodium.crypto_aead_xchacha20poly1305_ietf_KEYBYTES, sessionKeyModifier, sharedSecret);
+        let sessionIV = sodium.crypto_generichash(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES, sessionIVModifier, sharedSecret);
 
         let request = {
             "username": username,
@@ -180,7 +183,7 @@
             "verifier": sodium.to_base64(verifierC),
         };
 
-        return [request, sessionKey, iv];
+        return [request, sessionKey, sessionIV];
     }
 
     async function register(e) {
@@ -188,7 +191,6 @@
         document.getElementById('statusMessage').innerText = "";
         try {
             let [username, password] = credentials();
-            console.log('register ' + username + " " + password);
             let [request1, mask] = craftBlindSaltRequest(username, password)
             let resp = await fetch("/register/step1", {
                 method: "POST",
@@ -213,9 +215,7 @@
         document.getElementById('statusMessage').innerText = "";
         try {
             let [username, password] = credentials();
-            console.log('register ' + username + " " + password);
             let [request1, mask] = craftBlindSaltRequest(username, password)
-            console.log("mask:", sodium.to_base64(mask));
             let resp = await fetch("/login/step1", {
                 method: "POST",
                 body: JSON.stringify(request1),
@@ -223,9 +223,6 @@
 
             let respJson = await resp.json();
             let [request2, key, iv] = craftLoginRequest(username, password, mask, respJson.salt, respJson.blob, respJson.publicKey);
-
-            console.log("key:", sodium.to_base64(key));
-            console.log("iv:", sodium.to_base64(iv));
 
             resp = await fetch("/login/step2", {
                 method: "POST",

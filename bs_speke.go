@@ -3,8 +3,11 @@ package bs_speke
 import (
 	"bytes"
 	cryptorand "crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/gob"
 	"errors"
+	"fmt"
 	"github.com/bwesterb/go-ristretto"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -14,6 +17,9 @@ import (
 const (
 	registrationStep1Domain = "registration-step1"
 	loginStep1Domain        = "login-step1"
+	clientVerifierModifier  = "client verifier modifier"
+	sessionKeyModifier      = "session key modifier"
+	sessionIVModifier       = "session IV modifier"
 )
 
 type BSSpekeServer struct {
@@ -55,7 +61,6 @@ type RegistrationStep1Blob struct {
 type LoginStep1Blob struct {
 	ExpireEpoch uint64
 	PrivateKey  []byte
-	UserExists  byte
 }
 
 func NewBSSpekeServer(serverDomain string, staticKey []byte) *BSSpekeServer {
@@ -93,6 +98,15 @@ func (server *BSSpekeServer) encryptPacket(domain string, plaintext any, ad []by
 	additionalData[len(domain)] = 0
 	copy(additionalData[len(domain)+1:], ad)
 	return aead.Seal(nonce, nonce, buffer.Bytes(), additionalData), nil
+}
+
+func keyedHash(size int, key []byte, domain string) ([]byte, error) {
+	mac, err := blake2b.New(size, key)
+	if err != nil {
+		return nil, err
+	}
+	mac.Write([]byte(domain))
+	return mac.Sum([]byte{}), nil
 }
 
 func (server *BSSpekeServer) decryptPacket(domain string, ciphertext, ad []byte, result any) error {
@@ -153,22 +167,21 @@ func (server *BSSpekeServer) RegistrationStep2(username, blob []byte, generator,
 func (server *BSSpekeServer) LoginStep1(username []byte, blindSalt *ristretto.Point) (*LoginStep1Response, error) {
 	var s, r ristretto.Scalar
 	var g ristretto.Point
-	var userExists byte
 
 	salt, generator, err := server.GetUserSaltAndGenerator(username)
 	if err != nil {
 		// generate fake data to not leak whether the user exists
-		mac, _ := blake2b.New256(server.StaticKey)
-		key := mac.Sum(username)
+		key, err := keyedHash(32, server.StaticKey, string(username))
+		if err != nil {
+			return nil, err
+		}
 		g.SetElligator((*[32]byte)(key))
 		s.Derive(key)
-		userExists = 0
 	} else {
 		if !g.SetBytes((*[32]byte)(generator)) {
 			return nil, errors.New("invalid generator")
 		}
 		s.SetBytes((*[32]byte)(salt))
-		userExists = 1
 	}
 
 	r.Rand()
@@ -176,7 +189,6 @@ func (server *BSSpekeServer) LoginStep1(username []byte, blindSalt *ristretto.Po
 	body := &LoginStep1Blob{
 		ExpireEpoch: uint64(time.Now().Unix()) + 60,
 		PrivateKey:  r.Bytes(),
-		UserExists:  userExists,
 	}
 	blob, err := server.encryptPacket(loginStep1Domain, body, username)
 	if err != nil {
@@ -187,4 +199,59 @@ func (server *BSSpekeServer) LoginStep1(username []byte, blindSalt *ristretto.Po
 		BlindSalt: blindSalt.Bytes(),
 		PublicKey: g.ScalarMult(&g, &r).Bytes(),
 	}, nil
+}
+
+func (server *BSSpekeServer) LoginStep2(username, verifier, blob []byte, ephemeralPublicKey *ristretto.Point) (key, iv []byte, err error) {
+	var body LoginStep1Blob
+	err = server.decryptPacket(loginStep1Domain, blob, username, &body)
+	if err != nil {
+		return nil, nil, err
+	}
+	if uint64(time.Now().Unix()) > body.ExpireEpoch {
+		return nil, nil, errors.New("registration blob expired")
+	}
+
+	var privateKey ristretto.Scalar
+	privateKey.SetBytes((*[32]byte)(body.PrivateKey))
+
+	var userPublicKey ristretto.Point
+	userPublicKeyBytes, userPKError := server.GetUserPublicKey(username)
+	if userPKError != nil {
+		userPublicKey.Rand()
+	} else if !userPublicKey.SetBytes((*[32]byte)(userPublicKeyBytes)) {
+		return nil, nil, errors.New("invalid user public key")
+	}
+
+	secrets := make([]byte, 64)
+	ephemeralPublicKey.ScalarMult(ephemeralPublicKey, &privateKey).BytesInto((*[32]byte)(secrets[:32]))
+	userPublicKey.ScalarMult(&userPublicKey, &privateKey).BytesInto((*[32]byte)(secrets[32:]))
+	secrets, err = keyedHash(64, secrets, server.ServerDomain)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	calculatedVerifier, err := keyedHash(32, secrets, clientVerifierModifier)
+	if err != nil {
+		return nil, nil, err
+	}
+	sessionKey, err := keyedHash(chacha20poly1305.KeySize, secrets, sessionKeyModifier)
+	if err != nil {
+		return nil, nil, err
+	}
+	sessionIV, err := keyedHash(chacha20poly1305.NonceSizeX, secrets, sessionIVModifier)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if userPKError != nil {
+		return nil, nil, userPKError
+	}
+
+	if subtle.ConstantTimeCompare(calculatedVerifier, verifier) != 1 {
+		expected := base64.RawURLEncoding.EncodeToString(calculatedVerifier)
+		got := base64.RawURLEncoding.EncodeToString(verifier)
+		return nil, nil, fmt.Errorf("invalid verifier, expected %s, got %s", expected, got)
+	}
+
+	return sessionKey, sessionIV, nil
 }
