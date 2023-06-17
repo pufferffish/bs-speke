@@ -150,12 +150,27 @@ async function login(e) {
             body: JSON.stringify(request2),
         });
         respJson = await resp.json();
-        document.getElementById('statusMessage').innerText = respJson.status;
+        if (respJson.status === "OK") {
+            window.location.href = "/";
+        } else {
+            document.getElementById('statusMessage').innerText = respJson.status;
+        }
     } catch (e) {
         console.log(e);
         document.getElementById('statusMessage').innerText = "An error occurred";
     }
 }
 
-document.getElementById('register').addEventListener('click', register);
-document.getElementById('login').addEventListener('click', login);
+function logout(e) {
+    e.preventDefault();
+    fetch("/logout", {
+        method: "POST",
+        body: JSON.stringify({}),
+    }).then(() => {
+        window.location.href = "/";
+    });
+}
+
+document.getElementById('logout')?.addEventListener('click', logout);
+document.getElementById('register')?.addEventListener('click', register);
+document.getElementById('login')?.addEventListener('click', login);

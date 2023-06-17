@@ -1,10 +1,12 @@
 package main
 
 import (
+	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/bwesterb/go-ristretto"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/patrickmn/go-cache"
 	"github.com/pufferfish/bs-speke"
 	"html/template"
@@ -12,16 +14,19 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
 type HTTPHandler struct {
 	fileHandler http.Handler
 	bspServer   *bs_speke.BSSpekeServer
+	jwtKey      []byte
 }
 
 func respondError(w http.ResponseWriter, err error) {
 	log.Println(err)
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusInternalServerError)
 	jsonResponse := make(map[string]string)
 	jsonResponse["status"] = err.Error()
@@ -192,8 +197,19 @@ func (h *HTTPHandler) handleLoginStep2(w http.ResponseWriter, r map[string]strin
 		return
 	}
 
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": username,
+		"nbf": time.Now().Unix(),
+	})
+	tokenString, err := token.SignedString(h.jwtKey)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+
+	w.Header().Set("Set-Cookie", "sid="+tokenString+"; Path=/; HttpOnly")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"status":"Correct credentials"}`))
+	_, _ = w.Write([]byte(`{"status":"OK"}`))
 }
 
 func (h *HTTPHandler) handlePost(w http.ResponseWriter, path string, r map[string]string) {
@@ -207,12 +223,51 @@ func (h *HTTPHandler) handlePost(w http.ResponseWriter, path string, r map[strin
 		h.handleLoginStep1(w, r)
 	case "/login/step2":
 		h.handleLoginStep2(w, r)
+	case "/logout":
+		w.Header().Set("Set-Cookie", "sid=; Path=/; HttpOnly")
+		w.WriteHeader(http.StatusOK)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
 }
 
-func (h *HTTPHandler) handleGet(w http.ResponseWriter, path string) {
+func (h *HTTPHandler) getLoggedInUser(cookie string) string {
+	cookies := strings.Split(cookie, ";")
+	var tokenString string
+	for _, c := range cookies {
+		kv := strings.Split(strings.TrimSpace(c), "=")
+		if len(kv) != 2 {
+			continue
+		}
+		key := kv[0]
+		value := kv[1]
+		if key == "sid" {
+			tokenString = value
+			break
+		}
+	}
+	if tokenString == "" {
+		return ""
+	}
+	t, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return h.jwtKey, nil
+	})
+	if err != nil {
+		return ""
+	}
+	return t.Claims.(jwt.MapClaims)["sub"].(string)
+}
+
+type TemplateData struct {
+	Username   string
+	IsLoggedIn bool
+}
+
+func (h *HTTPHandler) handleGet(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
 	switch path {
 	case "/sodium.js", "/index.js":
 		w.Header().Set("Content-Type", "application/javascript")
@@ -230,6 +285,8 @@ func (h *HTTPHandler) handleGet(w http.ResponseWriter, path string) {
 			return
 		}
 	case "/":
+		user := h.getLoggedInUser(r.Header.Get("Cookie"))
+		fmt.Printf("Username: %s\n", user)
 		w.Header().Set("Content-Type", "text/html")
 		templ, err := template.ParseFiles("template/index.templ.html")
 		if err != nil {
@@ -237,21 +294,29 @@ func (h *HTTPHandler) handleGet(w http.ResponseWriter, path string) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		err = templ.Execute(w, nil)
+		var data TemplateData
+		if user != "" {
+			data.Username = user
+			data.IsLoggedIn = true
+		} else {
+			data.IsLoggedIn = false
+		}
+		err = templ.Execute(w, &data)
 		if err != nil {
 			log.Println(err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 	default:
-		w.WriteHeader(http.StatusNotFound)
+		w.Header().Set("Location", "/")
+		w.WriteHeader(http.StatusMovedPermanently)
 	}
 }
 
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		h.handleGet(w, r.URL.Path)
+		h.handleGet(w, r)
 	case "POST":
 		if r.ContentLength > 2048 {
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
@@ -289,7 +354,7 @@ func main() {
 	bspServer.SaveUser = func(username, salt, generator, publicKey []byte) error {
 		usernameStr := string(username)
 		if _, found := cache.Get(usernameStr); found {
-			return fmt.Errorf("User already exists")
+			return fmt.Errorf("Username already exists")
 		}
 		fmt.Printf("SaveUser: %s\n", usernameStr)
 		record := UserRecord{
@@ -306,7 +371,7 @@ func main() {
 		if record, found := cache.Get(usernameStr); found {
 			return record.(UserRecord).salt, record.(UserRecord).generator, nil
 		} else {
-			return nil, nil, fmt.Errorf("User not found")
+			return nil, nil, fmt.Errorf("Username not found")
 		}
 	}
 	bspServer.GetUserPublicKey = func(username []byte) ([]byte, error) {
@@ -314,12 +379,19 @@ func main() {
 		if record, found := cache.Get(usernameStr); found {
 			return record.(UserRecord).publicKey, nil
 		} else {
-			return nil, fmt.Errorf("User not found")
+			return nil, fmt.Errorf("Username not found")
 		}
+	}
+	hmacSampleSecret := make([]byte, 32)
+	_, err := cryptorand.Read(hmacSampleSecret)
+	if err != nil {
+		panic(err)
 	}
 	handler := HTTPHandler{
 		fileHandler: http.FileServer(http.Dir("./cmd/")),
 		bspServer:   bspServer,
+		jwtKey:      hmacSampleSecret,
 	}
+
 	log.Fatal(http.ListenAndServe(":9009", &handler))
 }

@@ -55,6 +55,14 @@
                              width="200px" alt="profile">
                     </div>
 
+                    {{ if .IsLoggedIn }}
+                    <div class="text-center">
+                        <button id="logout" class="btn btn-color px-5 mb-3 w-100">Log out</button>
+                    </div>
+                    <div class="form-text text-center mb-5 text-dark">
+                        Logged in as {{ .Username }}
+                    </div>
+                    {{ else }}
                     <div class="mb-3">
                         <input type="text" class="form-control" id="username" aria-describedby="emailHelp"
                                placeholder="Username">
@@ -70,6 +78,7 @@
                     </div>
                     <div id="statusMessage" class="form-text text-center mb-5 text-dark">
                     </div>
+                    {{ end }}
                 </form>
             </div>
 
