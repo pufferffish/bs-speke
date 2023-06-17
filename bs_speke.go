@@ -4,7 +4,6 @@ import (
 	"bytes"
 	cryptorand "crypto/rand"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -248,9 +247,7 @@ func (server *BSSpekeServer) LoginStep2(username, verifier, blob []byte, ephemer
 	}
 
 	if subtle.ConstantTimeCompare(calculatedVerifier, verifier) != 1 {
-		expected := base64.RawURLEncoding.EncodeToString(calculatedVerifier)
-		got := base64.RawURLEncoding.EncodeToString(verifier)
-		return nil, nil, fmt.Errorf("invalid verifier, expected %s, got %s", expected, got)
+		return nil, nil, fmt.Errorf("invalid verifier")
 	}
 
 	return sessionKey, sessionIV, nil

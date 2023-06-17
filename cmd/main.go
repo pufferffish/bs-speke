@@ -7,9 +7,11 @@ import (
 	"github.com/bwesterb/go-ristretto"
 	"github.com/patrickmn/go-cache"
 	"github.com/pufferfish/bs-speke"
+	"html/template"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -210,8 +212,47 @@ func (h *HTTPHandler) handlePost(w http.ResponseWriter, path string, r map[strin
 	}
 }
 
+func (h *HTTPHandler) handleGet(w http.ResponseWriter, path string) {
+	switch path {
+	case "/sodium.js", "/index.js":
+		w.Header().Set("Content-Type", "application/javascript")
+		file, err := os.Open("js" + path)
+		if err != nil {
+			log.Println(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		defer file.Close()
+		_, err = io.Copy(w, file)
+		if err != nil {
+			log.Println(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	case "/":
+		w.Header().Set("Content-Type", "text/html")
+		templ, err := template.ParseFiles("template/index.templ.html")
+		if err != nil {
+			log.Println(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		err = templ.Execute(w, nil)
+		if err != nil {
+			log.Println(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "POST" {
+	switch r.Method {
+	case "GET":
+		h.handleGet(w, r.URL.Path)
+	case "POST":
 		if r.ContentLength > 2048 {
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			return
@@ -232,8 +273,8 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.handlePost(w, r.URL.Path, request)
-	} else {
-		h.fileHandler.ServeHTTP(w, r)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 
