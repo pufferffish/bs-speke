@@ -76,6 +76,7 @@ int bs_speke_derive_secret(bs_speke_ctx* ctx, const uint8_t blinded_salt[32], ui
   crypto_x25519(salt, ctx->salt_mask, blinded_salt);
   // check if we are trapped in a small subgroup
   uint8_t zeros[32];
+  memset(zeros, 0, 32);
   if (crypto_verify32(zeros, salt) == 0) {
     return -1;
   }
@@ -111,6 +112,7 @@ int bs_speke_derive_secret(bs_speke_ctx* ctx, const uint8_t blinded_salt[32], ui
 
 int bs_speke_register(bs_speke_ctx *ctx, uint8_t generator[32], uint8_t public_key[32]) {
   uint8_t zeros[32];
+  memset(zeros, 0, 32);
   if (crypto_verify32(zeros, ctx->generator) == 0) {
     return -1;
   }
@@ -126,6 +128,7 @@ int bs_speke_register(bs_speke_ctx *ctx, uint8_t generator[32], uint8_t public_k
 int bs_speke_login_key_exchange(bs_speke_ctx* ctx, uint8_t ephemeral_client_pk[32], uint8_t shared_key_material[64], const uint8_t ephemeral_server_pk[32]) {
   uint8_t secret[64];
   uint8_t zeros[32];
+  memset(zeros, 0, 32);
   crypto_x25519(secret, ctx->ephemeral_key, ephemeral_server_pk);
   if (crypto_verify32(zeros, secret) == 0) {
     return -1;

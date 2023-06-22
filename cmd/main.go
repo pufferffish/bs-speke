@@ -104,23 +104,17 @@ func (h *HTTPHandler) handleRegisterStep2(w http.ResponseWriter, r map[string]st
 		return
 	}
 
-	generatorBytes, err := checkAndDecode(w, r, "generator")
+	generator, err := checkAndDecode(w, r, "generator")
 	if err != nil {
 		return
 	}
 
-	publicKeyBytes, err := checkAndDecode(w, r, "publicKey")
+	publicKey, err := checkAndDecode(w, r, "publicKey")
 	if err != nil {
 		return
 	}
 
-	var generatorPoint, publicKeyPoint ristretto.Point
-	if !generatorPoint.SetBytes((*[32]byte)(generatorBytes)) || !publicKeyPoint.SetBytes((*[32]byte)(publicKeyBytes)) {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	err = h.bspServer.RegistrationStep2([]byte(username), blob, &generatorPoint, &publicKeyPoint)
+	err = h.bspServer.RegistrationStep2([]byte(username), blob, generator, publicKey)
 	if err != nil {
 		respondError(w, err)
 		return

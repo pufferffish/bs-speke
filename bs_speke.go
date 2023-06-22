@@ -100,13 +100,13 @@ func (server *BSSpekeServer) encryptPacket(domain string, plaintext any, ad []by
 	return aead.Seal(nonce, nonce, buffer.Bytes(), additionalData), nil
 }
 
-func keyedHash(size int, key []byte, domain string) ([]byte, error) {
+func keyedHash(size int, key []byte, domain string) []byte {
 	mac, err := blake2b.New(size, key)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 	mac.Write([]byte(domain))
-	return mac.Sum([]byte{}), nil
+	return mac.Sum([]byte{})
 }
 
 func (server *BSSpekeServer) decryptPacket(domain string, ciphertext, ad []byte, result any) error {
@@ -159,7 +159,7 @@ func (server *BSSpekeServer) RegistrationStep1(username []byte, blindSalt []byte
 	}, nil
 }
 
-func (server *BSSpekeServer) RegistrationStep2(username, blob []byte, generator, publicKey *ristretto.Point) error {
+func (server *BSSpekeServer) RegistrationStep2(username, blob, generator, publicKey []byte) error {
 	var body RegistrationStep1Blob
 	err := server.decryptPacket(registrationStep1Domain, blob, username, &body)
 	if err != nil {
@@ -169,43 +169,45 @@ func (server *BSSpekeServer) RegistrationStep2(username, blob []byte, generator,
 		return errors.New("registration blob expired")
 	}
 
-	return server.SaveUser(username, body.Salt, generator.Bytes(), publicKey.Bytes())
+	return server.SaveUser(username, body.Salt, generator, publicKey)
 }
 
 func (server *BSSpekeServer) LoginStep1(username []byte, blindSalt []byte) (*LoginStep1Response, error) {
-	var s, r ristretto.Scalar
-	var g ristretto.Point
-
 	salt, generator, err := server.GetUserSaltAndGenerator(username)
 	if err != nil {
 		// generate fake data to not leak whether the user exists
-		key, err := keyedHash(32, server.StaticKey, string(username))
-		if err != nil {
-			return nil, err
-		}
-		g.SetElligator((*[32]byte)(key))
-		s.Derive(key)
-	} else {
-		if !g.SetBytes((*[32]byte)(generator)) {
-			return nil, errors.New("invalid generator")
-		}
-		s.SetBytes((*[32]byte)(salt))
+		generator = make([]byte, 32)
+		key := keyedHash(32, server.StaticKey, "generator\x00"+string(username))
+		curve25519.ScalarBaseMult((*[32]byte)(generator), (*[32]byte)(key))
+		salt = keyedHash(32, server.StaticKey, "salt\x00"+string(username))
 	}
 
-	r.Rand()
-	// blindSalt.ScalarMult(blindSalt, &s)
+	blindSalt, err = curve25519.X25519(salt, blindSalt)
+	if err != nil {
+		return nil, err
+	}
+
+	r := make([]byte, 32)
+	if _, err = cryptorand.Read(r); err != nil {
+		return nil, err
+	}
 	body := &LoginStep1Blob{
 		ExpireEpoch: uint64(time.Now().Unix()) + 60,
-		PrivateKey:  r.Bytes(),
+		PrivateKey:  r,
 	}
 	blob, err := server.encryptPacket(loginStep1Domain, body, username)
 	if err != nil {
 		return nil, err
 	}
+	gr, err := curve25519.X25519(r, generator)
+	if err != nil {
+		return nil, err
+	}
+
 	return &LoginStep1Response{
-		Blob: blob,
-		// BlindSalt: blindSalt.Bytes(),
-		PublicKey: g.ScalarMult(&g, &r).Bytes(),
+		Blob:      blob,
+		BlindSalt: blindSalt,
+		PublicKey: gr,
 	}, nil
 }
 
@@ -233,23 +235,10 @@ func (server *BSSpekeServer) LoginStep2(username, verifier, blob []byte, ephemer
 	secrets := make([]byte, 64)
 	ephemeralPublicKey.ScalarMult(ephemeralPublicKey, &privateKey).BytesInto((*[32]byte)(secrets[:32]))
 	userPublicKey.ScalarMult(&userPublicKey, &privateKey).BytesInto((*[32]byte)(secrets[32:]))
-	secrets, err = keyedHash(64, secrets, server.ServerDomain)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	calculatedVerifier, err := keyedHash(32, secrets, clientVerifierModifier)
-	if err != nil {
-		return nil, nil, err
-	}
-	sessionKey, err := keyedHash(chacha20poly1305.KeySize, secrets, sessionKeyModifier)
-	if err != nil {
-		return nil, nil, err
-	}
-	sessionIV, err := keyedHash(chacha20poly1305.NonceSizeX, secrets, sessionIVModifier)
-	if err != nil {
-		return nil, nil, err
-	}
+	secrets = keyedHash(64, secrets, server.ServerDomain)
+	calculatedVerifier := keyedHash(32, secrets, clientVerifierModifier)
+	sessionKey := keyedHash(chacha20poly1305.KeySize, secrets, sessionKeyModifier)
+	sessionIV := keyedHash(chacha20poly1305.NonceSizeX, secrets, sessionIVModifier)
 
 	if userPKError != nil {
 		return nil, nil, userPKError

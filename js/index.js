@@ -75,7 +75,10 @@ function deriveSecrets(ctx, salt) {
 function craftRegisterRequest(ctx, salt, blob) {
     deriveSecrets(ctx, salt);
     const buf = bsSpeke._malloc(64);
-    bsSpeke._bs_speke_register(ctx.ctx, buf, buf+32); // gen, pk
+    const r = bsSpeke._bs_speke_register(ctx.ctx, buf, buf+32); // gen, pk
+    if (r !== 0) {
+        throw new Error("got low order point");
+    }
     const request = {
         "username": ctx.username,
         "generator": encodeBase64Bytes(buf, 32),
@@ -86,36 +89,27 @@ function craftRegisterRequest(ctx, salt, blob) {
     return request;
 }
 
-function craftLoginRequest(username, password, mask, salt, blob, publicKey) {
-    let serverPublicKey = sodium.from_base64(publicKey);
-    if (!sodium.crypto_core_ristretto255_is_valid_point(serverPublicKey)) {
-        throw "invalid ephemeral public key";
+function craftLoginRequest(ctx, salt, blob, publicKey) {
+    deriveSecrets(ctx, salt);
+    const ephemeralPublic = bsSpeke._malloc(32);
+    const verifier = bsSpeke._malloc(64);
+    const publicKeyPtr = bsSpeke._malloc(32);
+    bsSpeke.HEAPU8.set(base64ToArrayBuffer(publicKey), publicKeyPtr);
+    const r = bsSpeke._bs_speke_login_key_exchange(ctx.ctx, ephemeralPublic, verifier, publicKeyPtr);
+    if (r !== 0) {
+        throw new Error("got low order point");
     }
 
-    let secrets = deriveSecrets(password, mask, salt);
-    let ephemeralSecret = sodium.crypto_core_ristretto255_scalar_random();
-    let ephemeralPublic = sodium.crypto_scalarmult_ristretto255(ephemeralSecret, secrets.generator);
-    let sharedSecret = new Uint8Array(sodium.crypto_core_ristretto255_BYTES * 2);
-
-    let ephemeralToSeverStatic = sodium.crypto_scalarmult_ristretto255(ephemeralSecret, serverPublicKey);
-    let userStaticToServerStatic = sodium.crypto_scalarmult_ristretto255(secrets.privateKey, serverPublicKey);
-
-    sharedSecret.set(ephemeralToSeverStatic, 0);
-    sharedSecret.set(userStaticToServerStatic, sodium.crypto_core_ristretto255_BYTES);
-    sharedSecret = sodium.crypto_generichash(64, serverID, sharedSecret);
-
-    let verifierC = sodium.crypto_generichash(32, clientVerifierModifier, sharedSecret);
-    let sessionKey = sodium.crypto_generichash(sodium.crypto_aead_xchacha20poly1305_ietf_KEYBYTES, sessionKeyModifier, sharedSecret);
-    let sessionIV = sodium.crypto_generichash(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES, sessionIVModifier, sharedSecret);
-
     let request = {
-        "username": username,
+        "username": ctx.username,
         "blob": blob,
-        "ephemeralPublic": sodium.to_base64(ephemeralPublic),
-        "verifier": sodium.to_base64(verifierC),
+        "ephemeralPublic": encodeBase64Bytes(ephemeralPublic, 32),
+        "verifier": encodeBase64Bytes(verifier, 64),
     };
 
-    return [request, sessionKey, sessionIV];
+    bsSpeke._free(ephemeralPublic);
+    bsSpeke._free(verifier);
+    return request;
 }
 
 async function register(e) {
@@ -149,17 +143,17 @@ async function register(e) {
 async function login(e) {
     e.preventDefault();
     document.getElementById('statusMessage').innerText = "";
+    let [username, password] = credentials();
+    let ctx = newBSSpekeContext(serverID, username, password);
     try {
-        let [username, password] = credentials();
-        let [request1, mask] = craftBlindSaltRequest(username, password)
+        let request1 = craftBlindSaltRequest(ctx);
         let resp = await fetch("/login/step1", {
             method: "POST",
             body: JSON.stringify(request1),
         });
 
         let respJson = await resp.json();
-        let [request2, key, iv] = craftLoginRequest(username, password, mask, respJson.salt, respJson.blob, respJson.publicKey);
-
+        let request2 = craftLoginRequest(ctx, respJson.salt, respJson.blob, respJson.publicKey);
         resp = await fetch("/login/step2", {
             method: "POST",
             body: JSON.stringify(request2),
@@ -173,6 +167,8 @@ async function login(e) {
     } catch (e) {
         console.log(e);
         document.getElementById('statusMessage').innerText = "An error occurred";
+    } finally {
+        ctx.free();
     }
 }
 
