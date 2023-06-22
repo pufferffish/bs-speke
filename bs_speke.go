@@ -10,6 +10,7 @@ import (
 	"github.com/bwesterb/go-ristretto"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/crypto/curve25519"
 	"time"
 )
 
@@ -132,13 +133,21 @@ func (server *BSSpekeServer) decryptPacket(domain string, ciphertext, ad []byte,
 	return gob.NewDecoder(bytes.NewReader(plaintext)).Decode(result)
 }
 
-func (server *BSSpekeServer) RegistrationStep1(username []byte, blindSalt *ristretto.Point) (*RegistrationStep1Response, error) {
-	var r ristretto.Scalar
-	r.Rand()
-	blindSalt.ScalarMult(blindSalt, &r)
+func (server *BSSpekeServer) RegistrationStep1(username []byte, blindSalt []byte) (*RegistrationStep1Response, error) {
+	var r [32]byte
+	_, err := cryptorand.Read(r[:])
+	if err != nil {
+		return nil, err
+	}
+
+	blindSalt, err = curve25519.X25519(r[:], blindSalt)
+	if err != nil {
+		return nil, err
+	}
+
 	body := &RegistrationStep1Blob{
 		ExpireEpoch: uint64(time.Now().Unix()) + 60,
-		Salt:        r.Bytes(),
+		Salt:        r[:],
 	}
 	blob, err := server.encryptPacket(registrationStep1Domain, body, username)
 	if err != nil {
@@ -146,7 +155,7 @@ func (server *BSSpekeServer) RegistrationStep1(username []byte, blindSalt *ristr
 	}
 	return &RegistrationStep1Response{
 		Blob:      blob,
-		BlindSalt: blindSalt.Bytes(),
+		BlindSalt: blindSalt,
 	}, nil
 }
 
@@ -163,7 +172,7 @@ func (server *BSSpekeServer) RegistrationStep2(username, blob []byte, generator,
 	return server.SaveUser(username, body.Salt, generator.Bytes(), publicKey.Bytes())
 }
 
-func (server *BSSpekeServer) LoginStep1(username []byte, blindSalt *ristretto.Point) (*LoginStep1Response, error) {
+func (server *BSSpekeServer) LoginStep1(username []byte, blindSalt []byte) (*LoginStep1Response, error) {
 	var s, r ristretto.Scalar
 	var g ristretto.Point
 
@@ -184,7 +193,7 @@ func (server *BSSpekeServer) LoginStep1(username []byte, blindSalt *ristretto.Po
 	}
 
 	r.Rand()
-	blindSalt.ScalarMult(blindSalt, &s)
+	// blindSalt.ScalarMult(blindSalt, &s)
 	body := &LoginStep1Blob{
 		ExpireEpoch: uint64(time.Now().Unix()) + 60,
 		PrivateKey:  r.Bytes(),
@@ -194,8 +203,8 @@ func (server *BSSpekeServer) LoginStep1(username []byte, blindSalt *ristretto.Po
 		return nil, err
 	}
 	return &LoginStep1Response{
-		Blob:      blob,
-		BlindSalt: blindSalt.Bytes(),
+		Blob: blob,
+		// BlindSalt: blindSalt.Bytes(),
 		PublicKey: g.ScalarMult(&g, &r).Bytes(),
 	}, nil
 }

@@ -1,3 +1,5 @@
+import bs_speke from './bs_speke.js';
+
 const serverID = "test server";
 const generatorModifier = "generator modifier";
 const privateKeyModifier = "private key modifier";
@@ -12,67 +14,76 @@ window.sodium = {
     }
 };
 
+let bsSpeke = undefined;
+bs_speke().then((bsSpeke_) => {
+    bsSpeke = bsSpeke_;
+    console.log("bsSpeke loaded");
+    console.log("Test", bsSpeke._bs_speke_size()) ;
+});
+
 function credentials() {
     let username = document.getElementById('username').value;
     let password = document.getElementById('password').value;
     return [username.trim(), password];
 }
 
-function craftBlindSaltRequest(username, password) {
+function encodeBase64Bytes(ptr, size) {
+    let bytes = new Uint8Array(bsSpeke.HEAPU8.buffer, ptr, size);
+    return btoa(
+        bytes.reduce((acc, current) => acc + String.fromCharCode(current), "")
+    );
+}
+
+function base64ToArrayBuffer(base64) {
+    return Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+}
+
+function newBSSpekeContext(serverID, username, password) {
+    let ctx = bsSpeke._malloc(bsSpeke._bs_speke_size());
+    let entropy = bsSpeke._malloc(64);
+    window.crypto.getRandomValues(new Uint8Array(bsSpeke.HEAPU8.buffer, entropy, 64));
+    bsSpeke.cwrap("bs_speke_init", "number", ["number", "string", "string", "string", "number"])(ctx, serverID, username, password, entropy);
+    bsSpeke._free(entropy);
+    return {
+        ctx: ctx,
+        username: username,
+        free: () => bsSpeke._free(ctx)
+    };
+}
+
+function craftBlindSaltRequest(ctx) {
     // generate blind salt
-    let salt = sodium.crypto_generichash(64, sodium.from_string(password), sodium.from_string(serverID));
-    salt = sodium.crypto_core_ristretto255_from_hash(salt);
-    let mask = sodium.crypto_core_ristretto255_scalar_random();
-    salt = sodium.crypto_scalarmult_ristretto255(mask, salt);
-    mask = sodium.crypto_core_ristretto255_scalar_invert(mask);
-
+    let salt = bsSpeke._malloc(32);
+    bsSpeke._bs_speke_get_salt(ctx.ctx, salt);
     let request = {
-        "salt": sodium.to_base64(salt),
-        "username": username,
+        "salt": encodeBase64Bytes(salt, 32),
+        "username": ctx.username,
     };
 
-    return [request, mask];
+    bsSpeke._free(salt);
+    return request;
 }
 
-function deriveSecrets(password, mask, salt) {
-    salt = sodium.from_base64(salt);
-    if (!sodium.crypto_core_ristretto255_is_valid_point(salt)) {
-        throw "invalid salt";
-    }
-
-    let blindSalt = sodium.crypto_scalarmult_ristretto255(mask, salt);
-    blindSalt = sodium.crypto_generichash(sodium.crypto_pwhash_SALTBYTES, blindSalt, sodium.from_string(serverID));
-
-    let keyMaterial = sodium.crypto_pwhash(64, sodium.from_string(password), blindSalt,
-        sodium.crypto_pwhash_OPSLIMIT_INTERACTIVE, sodium.crypto_pwhash_MEMLIMIT_INTERACTIVE, sodium.crypto_pwhash_ALG_DEFAULT);
-
-    let generator = sodium.crypto_generichash(sodium.crypto_core_ristretto255_HASHBYTES,
-        keyMaterial, sodium.from_string(generatorModifier));
-    generator = sodium.crypto_core_ristretto255_from_hash(generator);
-
-    let privateKey = sodium.crypto_generichash(sodium.crypto_core_ristretto255_HASHBYTES,
-        keyMaterial, sodium.from_string(privateKeyModifier));
-    privateKey = sodium.crypto_core_ristretto255_scalar_reduce(privateKey);
-
-    sodium.memzero(keyMaterial);
-
-    let publicKey = sodium.crypto_scalarmult_ristretto255(privateKey, generator);
-
-    return {
-        "generator": generator,
-        "publicKey": publicKey,
-        "privateKey": privateKey,
-    };
+function deriveSecrets(ctx, salt) {
+    const workArea = bsSpeke._malloc(470000*1024);
+    const saltPtr = bsSpeke._malloc(32);
+    bsSpeke.HEAPU8.set(base64ToArrayBuffer(salt), saltPtr);
+    bsSpeke._bs_speke_derive_secret(ctx.ctx, saltPtr, workArea);
+    bsSpeke._free(workArea);
 }
 
-function craftRegisterRequest(username, password, mask, salt, blob) {
-    let secrets = deriveSecrets(password, mask, salt);
-    return {
-        "username": username,
-        "generator": sodium.to_base64(secrets.generator),
-        "publicKey": sodium.to_base64(secrets.publicKey),
+function craftRegisterRequest(ctx, salt, blob) {
+    deriveSecrets(ctx, salt);
+    const buf = bsSpeke._malloc(64);
+    bsSpeke._bs_speke_register(ctx.ctx, buf, buf+32); // gen, pk
+    const request = {
+        "username": ctx.username,
+        "generator": encodeBase64Bytes(buf, 32),
+        "publicKey": encodeBase64Bytes(buf+32, 32),
         "blob": blob,
     };
+    bsSpeke._free(buf);
+    return request;
 }
 
 function craftLoginRequest(username, password, mask, salt, blob, publicKey) {
@@ -110,15 +121,17 @@ function craftLoginRequest(username, password, mask, salt, blob, publicKey) {
 async function register(e) {
     e.preventDefault();
     document.getElementById('statusMessage').innerText = "";
+    let [username, password] = credentials();
+    let ctx = newBSSpekeContext(serverID, username, password);
     try {
-        let [username, password] = credentials();
-        let [request1, mask] = craftBlindSaltRequest(username, password)
+        let request1 = craftBlindSaltRequest(ctx);
         let resp = await fetch("/register/step1", {
             method: "POST",
             body: JSON.stringify(request1),
         });
+
         let respJson = await resp.json();
-        let request2 = craftRegisterRequest(username, password, mask, respJson.salt, respJson.blob);
+        let request2 = craftRegisterRequest(ctx, respJson.salt, respJson.blob);
         resp = await fetch("/register/step2", {
             method: "POST",
             body: JSON.stringify(request2),
@@ -128,6 +141,8 @@ async function register(e) {
     } catch (e) {
         console.log(e);
         document.getElementById('statusMessage').innerText = "An error occurred";
+    } finally {
+        ctx.free();
     }
 }
 

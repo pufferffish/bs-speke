@@ -68,7 +68,7 @@ void bs_speke_get_salt(const bs_speke_ctx* ctx, uint8_t blinded_salt[32]) {
   crypto_x25519_inverse(blinded_salt, ctx->salt_mask, point);
 }
 
-#define ARGON_BLOCKS 190000
+#define ARGON_BLOCKS 470000
 
 int bs_speke_derive_secret(bs_speke_ctx* ctx, const uint8_t blinded_salt[32], uint8_t work_area[ARGON_BLOCKS*1024]) {
   // multiply salt by r to unmask it
@@ -84,9 +84,9 @@ int bs_speke_derive_secret(bs_speke_ctx* ctx, const uint8_t blinded_salt[32], ui
   crypto_blake2b_keyed(kdf_salt, 64, salt, 32, ctx->server_id, strlen(ctx->server_id));
   // perform KDF to derive secret
   crypto_argon2_config config = {
-    .algorithm = CRYPTO_ARGON2_ID,
+    .algorithm = CRYPTO_ARGON2_D,
     .nb_blocks = ARGON_BLOCKS,
-    .nb_passes = 3,
+    .nb_passes = 1,
     .nb_lanes  = 1
   };
   crypto_argon2_extras extras = {0};

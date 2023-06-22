@@ -39,7 +39,7 @@ func checkAndDecode(w http.ResponseWriter, r map[string]string, key string) ([]b
 		w.WriteHeader(http.StatusBadRequest)
 		return nil, fmt.Errorf("missing %s", key)
 	}
-	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	decoded, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
 		respondError(w, err)
 		return nil, err
@@ -47,7 +47,7 @@ func checkAndDecode(w http.ResponseWriter, r map[string]string, key string) ([]b
 	return decoded, nil
 }
 
-func parseBlindSaltRequest(r map[string]string) (username string, saltPoint *ristretto.Point, err error) {
+func parseBlindSaltRequest(r map[string]string) (username string, salt []byte, err error) {
 	username, ok := r["username"]
 	if !ok {
 		return "", nil, fmt.Errorf("missing username")
@@ -58,17 +58,12 @@ func parseBlindSaltRequest(r map[string]string) (username string, saltPoint *ris
 		return "", nil, fmt.Errorf("missing salt")
 	}
 
-	saltBlob, err := base64.RawURLEncoding.DecodeString(saltEncoded)
+	salt, err = base64.StdEncoding.DecodeString(saltEncoded)
 	if err != nil {
 		return "", nil, err
 	}
 
-	var salt ristretto.Point
-	if !salt.SetBytes((*[32]byte)(saltBlob)) {
-		return "", nil, fmt.Errorf("invalid salt")
-	}
-
-	return username, &salt, nil
+	return username, salt, nil
 }
 
 func (h *HTTPHandler) handleRegisterStep1(w http.ResponseWriter, r map[string]string) {
@@ -87,8 +82,8 @@ func (h *HTTPHandler) handleRegisterStep1(w http.ResponseWriter, r map[string]st
 	}
 
 	jsonResponse := make(map[string]string)
-	jsonResponse["salt"] = base64.RawURLEncoding.EncodeToString(response.BlindSalt)
-	jsonResponse["blob"] = base64.RawURLEncoding.EncodeToString(response.Blob)
+	jsonResponse["salt"] = base64.StdEncoding.EncodeToString(response.BlindSalt)
+	jsonResponse["blob"] = base64.StdEncoding.EncodeToString(response.Blob)
 	err = json.NewEncoder(w).Encode(jsonResponse)
 	if err != nil {
 		log.Println(err)
@@ -151,9 +146,9 @@ func (h *HTTPHandler) handleLoginStep1(w http.ResponseWriter, r map[string]strin
 	}
 
 	jsonResponse := make(map[string]string)
-	jsonResponse["salt"] = base64.RawURLEncoding.EncodeToString(response.BlindSalt)
-	jsonResponse["blob"] = base64.RawURLEncoding.EncodeToString(response.Blob)
-	jsonResponse["publicKey"] = base64.RawURLEncoding.EncodeToString(response.PublicKey)
+	jsonResponse["salt"] = base64.StdEncoding.EncodeToString(response.BlindSalt)
+	jsonResponse["blob"] = base64.StdEncoding.EncodeToString(response.Blob)
+	jsonResponse["publicKey"] = base64.StdEncoding.EncodeToString(response.PublicKey)
 	err = json.NewEncoder(w).Encode(jsonResponse)
 	if err != nil {
 		log.Println(err)
@@ -269,7 +264,7 @@ type TemplateData struct {
 func (h *HTTPHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	switch path {
-	case "/sodium.js", "/index.js":
+	case "/sodium.js", "/bs_speke.js", "/index.js":
 		w.Header().Set("Content-Type", "application/javascript")
 		file, err := os.Open("js" + path)
 		if err != nil {
@@ -307,6 +302,8 @@ func (h *HTTPHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+	case "/favicon.ico":
+		w.WriteHeader(http.StatusNotFound)
 	default:
 		w.Header().Set("Location", "/")
 		w.WriteHeader(http.StatusMovedPermanently)
