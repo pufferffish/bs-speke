@@ -1,19 +1,13 @@
 import bs_speke from './bs_speke.js';
 
 const serverID = "test server";
-const generatorModifier = "generator modifier";
-const privateKeyModifier = "private key modifier";
-const clientVerifierModifier = "client verifier modifier";
-const sessionKeyModifier = "session key modifier";
-const sessionIVModifier = "session IV modifier";
-
 const textEncoder = new TextEncoder();
 
 let bsSpeke = undefined;
 bs_speke().then((bsSpeke_) => {
     bsSpeke = bsSpeke_;
-    console.log("bsSpeke loaded");
-    console.log("Test", bsSpeke._bs_speke_size()) ;
+    console.log("BS-SPEKE module loaded");
+    console.log("Test", bsSpeke._bs_speke_size());
 });
 
 function credentials() {
@@ -42,7 +36,6 @@ function allocString(str) {
 }
 
 function newBSSpekeContext(serverID, username, password) {
-    const textEncoder = new TextEncoder();
     const usernamePtr = allocString(username);
     const passwordPtr = allocString(password);
     const serverIDPtr = allocString(serverID);

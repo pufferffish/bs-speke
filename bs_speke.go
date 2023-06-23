@@ -16,9 +16,6 @@ import (
 const (
 	registrationStep1Domain = "registration-step1"
 	loginStep1Domain        = "login-step1"
-	clientVerifierModifier  = "client verifier modifier"
-	sessionKeyModifier      = "session key modifier"
-	sessionIVModifier       = "session IV modifier"
 )
 
 type BSSpekeServer struct {
