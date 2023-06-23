@@ -94,6 +94,9 @@ int bs_speke_derive_secret(bs_speke_ctx* ctx, const uint8_t blinded_salt[32], ui
   crypto_blake2b_keyed(ctx->secret_key, 32, secret, 64, SECRET_KEY_MOD, strlen(SECRET_KEY_MOD));
   map_to_prime_order_point(ctx->generator, generator);
   crypto_x25519(ctx->public_key, ctx->secret_key, ctx->generator);
+  if (crypto_verify32(zeros, ctx->public_key) == 0) {
+    return -1;
+  }
   return 0;
 }
 
@@ -124,9 +127,12 @@ int bs_speke_login_key_exchange(bs_speke_ctx* ctx, uint8_t ephemeral_client_pk[3
   if (crypto_verify32(zeros, &secret[32]) == 0) {
     return -1;
   }
+  crypto_x25519(ephemeral_client_pk, ctx->ephemeral_key, ctx->generator);
+  if (crypto_verify32(zeros, ephemeral_client_pk) == 0) {
+    return -1;
+  }
 
   crypto_blake2b_ctx blake2b;
-  crypto_x25519(ephemeral_client_pk, ctx->ephemeral_key, ctx->generator);
   crypto_blake2b_keyed_init(&blake2b, 64, secret, 64);
   crypto_blake2b_update(&blake2b, ephemeral_client_pk, 32); // A
   crypto_blake2b_update(&blake2b, ctx->public_key, 32); // V
