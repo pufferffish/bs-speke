@@ -7,7 +7,6 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
-	"github.com/bwesterb/go-ristretto"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/curve25519"
@@ -211,42 +210,49 @@ func (server *BSSpekeServer) LoginStep1(username []byte, blindSalt []byte) (*Log
 	}, nil
 }
 
-func (server *BSSpekeServer) LoginStep2(username, verifier, blob []byte, ephemeralPublicKey *ristretto.Point) (key, iv []byte, err error) {
+func (server *BSSpekeServer) LoginStep2(username, verifier, blob, ephemeralPublicKey []byte) ([]byte, error) {
 	var body LoginStep1Blob
-	err = server.decryptPacket(loginStep1Domain, blob, username, &body)
+	err := server.decryptPacket(loginStep1Domain, blob, username, &body)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if uint64(time.Now().Unix()) > body.ExpireEpoch {
-		return nil, nil, errors.New("registration blob expired")
+		return nil, errors.New("registration blob expired")
 	}
 
-	var privateKey ristretto.Scalar
-	privateKey.SetBytes((*[32]byte)(body.PrivateKey))
+	privateKey := body.PrivateKey
 
-	var userPublicKey ristretto.Point
-	userPublicKeyBytes, userPKError := server.GetUserPublicKey(username)
+	userPublicKey, userPKError := server.GetUserPublicKey(username)
 	if userPKError != nil {
-		userPublicKey.Rand()
-	} else if !userPublicKey.SetBytes((*[32]byte)(userPublicKeyBytes)) {
-		return nil, nil, errors.New("invalid user public key")
+		userPublicKey = make([]byte, 32)
+		_, err = cryptorand.Read(userPublicKey)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	secrets := make([]byte, 64)
-	ephemeralPublicKey.ScalarMult(ephemeralPublicKey, &privateKey).BytesInto((*[32]byte)(secrets[:32]))
-	userPublicKey.ScalarMult(&userPublicKey, &privateKey).BytesInto((*[32]byte)(secrets[32:]))
-	secrets = keyedHash(64, secrets, server.ServerDomain)
-	calculatedVerifier := keyedHash(32, secrets, clientVerifierModifier)
-	sessionKey := keyedHash(chacha20poly1305.KeySize, secrets, sessionKeyModifier)
-	sessionIV := keyedHash(chacha20poly1305.NonceSizeX, secrets, sessionIVModifier)
+	bA, err := curve25519.X25519(privateKey, ephemeralPublicKey)
+	if err != nil {
+		return nil, err
+	}
+	bV, err := curve25519.X25519(privateKey, userPublicKey)
+	if err != nil {
+		return nil, err
+	}
+	blake, err := blake2b.New(64, append(bA, bV...))
+	blake.Write(ephemeralPublicKey)
+	blake.Write(userPublicKey)
+	blake.Write([]byte(server.ServerDomain))
+	blake.Write(username)
+	calculatedVerifier := blake.Sum(nil)
 
 	if userPKError != nil {
-		return nil, nil, userPKError
+		return nil, userPKError
 	}
 
 	if subtle.ConstantTimeCompare(calculatedVerifier, verifier) != 1 {
-		return nil, nil, fmt.Errorf("invalid verifier")
+		return nil, fmt.Errorf("invalid verifier")
 	}
 
-	return sessionKey, sessionIV, nil
+	return calculatedVerifier, nil
 }

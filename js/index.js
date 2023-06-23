@@ -68,8 +68,11 @@ function deriveSecrets(ctx, salt) {
     const workArea = bsSpeke._malloc(470000*1024);
     const saltPtr = bsSpeke._malloc(32);
     bsSpeke.HEAPU8.set(base64ToArrayBuffer(salt), saltPtr);
-    bsSpeke._bs_speke_derive_secret(ctx.ctx, saltPtr, workArea);
+    const r = bsSpeke._bs_speke_derive_secret(ctx.ctx, saltPtr, workArea);
     bsSpeke._free(workArea);
+    if (r !== 0) {
+        throw new Error("got low order point");
+    }
 }
 
 function craftRegisterRequest(ctx, salt, blob) {

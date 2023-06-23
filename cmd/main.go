@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/bwesterb/go-ristretto"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/patrickmn/go-cache"
 	"github.com/pufferfish/bs-speke"
@@ -173,13 +172,7 @@ func (h *HTTPHandler) handleLoginStep2(w http.ResponseWriter, r map[string]strin
 		return
 	}
 
-	var ephemeralPublicPoint ristretto.Point
-	if !ephemeralPublicPoint.SetBytes((*[32]byte)(ephemeralPublic)) {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	_, _, err = h.bspServer.LoginStep2([]byte(username), verifier, blob, &ephemeralPublicPoint)
+	_, err = h.bspServer.LoginStep2([]byte(username), verifier, blob, ephemeralPublic)
 	if err != nil {
 		log.Println(err)
 		respondError(w, fmt.Errorf("Invalid credentials"))
