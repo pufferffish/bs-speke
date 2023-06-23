@@ -251,7 +251,7 @@ type TemplateData struct {
 func (h *HTTPHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	switch path {
-	case "/sodium.js", "/bs_speke.js", "/index.js":
+	case "/bs_speke.js", "/index.js":
 		w.Header().Set("Content-Type", "application/javascript")
 		file, err := os.Open("js" + path)
 		if err != nil {
