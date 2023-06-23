@@ -1,19 +1,6 @@
 #include "monocypher.h"
 #include <string.h>
 
-#ifndef __EMSCRIPTEN__
-#include <stdio.h>
-#include <sys/random.h>
-#include <stdlib.h>
-
-void printBufferHex(const uint8_t *buffer, size_t size) {
-  for (size_t i = 0; i < size; i++) {
-    printf("%02x", buffer[i]);
-  }
-  printf("\n");
-}
-#endif
-
 #define GENERATOR_MOD  "generator_mod"
 #define SECRET_KEY_MOD "secret_key_mod"
 
@@ -68,7 +55,7 @@ void bs_speke_get_salt(const bs_speke_ctx* ctx, uint8_t blinded_salt[32]) {
   crypto_x25519_inverse(blinded_salt, ctx->salt_mask, point);
 }
 
-#define ARGON_BLOCKS 470000
+#define ARGON_BLOCKS 100000
 
 int bs_speke_derive_secret(bs_speke_ctx* ctx, const uint8_t blinded_salt[32], uint8_t work_area[ARGON_BLOCKS*1024]) {
   // multiply salt by r to unmask it
@@ -87,7 +74,7 @@ int bs_speke_derive_secret(bs_speke_ctx* ctx, const uint8_t blinded_salt[32], ui
   crypto_argon2_config config = {
     .algorithm = CRYPTO_ARGON2_D,
     .nb_blocks = ARGON_BLOCKS,
-    .nb_passes = 1,
+    .nb_passes = 4,
     .nb_lanes  = 1
   };
   crypto_argon2_extras extras = {0};
@@ -148,87 +135,3 @@ int bs_speke_login_key_exchange(bs_speke_ctx* ctx, uint8_t ephemeral_client_pk[3
   crypto_blake2b_final(&blake2b, shared_key_material);
   return 0;
 }
-
-#ifndef __EMSCRIPTEN__
-int main() {
-  int r;
-  uint8_t user_salt[32];
-  for (int i = 0; i < 32; i++) {
-    user_salt[i] = (uint8_t) i;
-  }
-  uint8_t user_generator[32];
-  uint8_t user_public_key[32];
-
-  uint8_t entropy[64];
-  getrandom(entropy, 64, 0);
-  bs_speke_ctx register_ctx;
-  bs_speke_init(&register_ctx, "test server", "bob", "hunter123", entropy);
-
-  uint8_t blinded_salt[32];
-  bs_speke_get_salt(&register_ctx, blinded_salt);
-  printf("register blinded salt: ");
-  printBufferHex(blinded_salt, 32);
-
-  // SERVER CODE START
-  uint8_t user_point[32];
-  crypto_x25519(user_point, user_salt, blinded_salt);
-  memcpy(blinded_salt, user_point, 32);
-  // SERVER CODE END
-
-  uint8_t *work_area = malloc(ARGON_BLOCKS*1024);
-  r = bs_speke_derive_secret(&register_ctx, blinded_salt, work_area);
-  if (r != 0) {
-    printf("error: trapped in small subgroup\n");
-    return -1;
-  }
-  r = bs_speke_register(&register_ctx, user_generator, user_public_key);
-  if (r != 0) {
-    printf("error: registration failed\n");
-    return -1;
-  }
-
-  printf("generator: ");
-  printBufferHex(&register_ctx.generator[0], 32);
-  printf("secret key: ");
-  printBufferHex(&register_ctx.secret_key[0], 32);
-  printf("public key: ");
-  printBufferHex(&register_ctx.public_key[0], 32);
-
-  // LOGIN
-  getrandom(entropy, 64, 0);
-  bs_speke_ctx login_ctx;
-  bs_speke_init(&login_ctx, "test server", "bob", "hunter123", entropy);
-
-  bs_speke_get_salt(&login_ctx, blinded_salt);
-  printf("login blinded salt: ");
-  printBufferHex(blinded_salt, 32);
-
-  // SERVER CODE START
-  uint8_t ephemeral_server_pk[32];
-  uint8_t ephemeral_server_sk[32];
-  getrandom(ephemeral_server_sk, 32, 0);
-  crypto_x25519(ephemeral_server_pk, ephemeral_server_sk, user_generator);
-  crypto_x25519(user_point, user_salt, blinded_salt);
-  memcpy(blinded_salt, user_point, 32);
-  // SERVER CODE END
-
-  r = bs_speke_derive_secret(&login_ctx, blinded_salt, work_area);
-  if (r != 0) {
-    printf("error: trapped in small subgroup\n");
-    return -1;
-  }
-  uint8_t ephemeral_client_pk[32];
-  uint8_t shared_key_material[64];
-  r = bs_speke_login_key_exchange(&login_ctx, ephemeral_client_pk, shared_key_material, ephemeral_server_pk);
-  if (r != 0) {
-    printf("error: registration failed\n");
-    return -1;
-  }
-
-  printf("client key material: ");
-  printBufferHex(shared_key_material, 64);
-
-  free(work_area);
-  return 0;
-}
-#endif

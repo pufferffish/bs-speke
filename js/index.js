@@ -7,12 +7,7 @@ const clientVerifierModifier = "client verifier modifier";
 const sessionKeyModifier = "session key modifier";
 const sessionIVModifier = "session IV modifier";
 
-let sodium = undefined;
-window.sodium = {
-    onload: function (sodium_) {
-        sodium = sodium_;
-    }
-};
+const textEncoder = new TextEncoder();
 
 let bsSpeke = undefined;
 bs_speke().then((bsSpeke_) => {
@@ -38,16 +33,34 @@ function base64ToArrayBuffer(base64) {
     return Uint8Array.from(atob(base64), c => c.charCodeAt(0));
 }
 
+function allocString(str) {
+    const bytes = textEncoder.encode(str);
+    const ptr = bsSpeke._malloc(bytes.length+1);
+    bsSpeke.HEAPU8.set(bytes, ptr);
+    bsSpeke.HEAPU8[ptr+bytes.length] = 0;
+    return ptr;
+}
+
 function newBSSpekeContext(serverID, username, password) {
-    let ctx = bsSpeke._malloc(bsSpeke._bs_speke_size());
-    let entropy = bsSpeke._malloc(64);
+    const textEncoder = new TextEncoder();
+    const usernamePtr = allocString(username);
+    const passwordPtr = allocString(password);
+    const serverIDPtr = allocString(serverID);
+
+    const ctx = bsSpeke._malloc(bsSpeke._bs_speke_size());
+    const entropy = bsSpeke._malloc(64);
     window.crypto.getRandomValues(new Uint8Array(bsSpeke.HEAPU8.buffer, entropy, 64));
-    bsSpeke.cwrap("bs_speke_init", "number", ["number", "string", "string", "string", "number"])(ctx, serverID, username, password, entropy);
+    bsSpeke._bs_speke_init(ctx, serverIDPtr, usernamePtr, passwordPtr, entropy);
     bsSpeke._free(entropy);
     return {
         ctx: ctx,
         username: username,
-        free: () => bsSpeke._free(ctx)
+        free: () => {
+            bsSpeke._free(ctx);
+            bsSpeke._free(usernamePtr);
+            bsSpeke._free(passwordPtr);
+            bsSpeke._free(serverIDPtr);
+        }
     };
 }
 
@@ -65,7 +78,7 @@ function craftBlindSaltRequest(ctx) {
 }
 
 function deriveSecrets(ctx, salt) {
-    const workArea = bsSpeke._malloc(470000*1024);
+    const workArea = bsSpeke._malloc(100_000*1024);
     const saltPtr = bsSpeke._malloc(32);
     bsSpeke.HEAPU8.set(base64ToArrayBuffer(salt), saltPtr);
     const r = bsSpeke._bs_speke_derive_secret(ctx.ctx, saltPtr, workArea);
@@ -79,9 +92,6 @@ function craftRegisterRequest(ctx, salt, blob) {
     deriveSecrets(ctx, salt);
     const buf = bsSpeke._malloc(64);
     const r = bsSpeke._bs_speke_register(ctx.ctx, buf, buf+32); // gen, pk
-    if (r !== 0) {
-        throw new Error("got low order point");
-    }
     const request = {
         "username": ctx.username,
         "generator": encodeBase64Bytes(buf, 32),
@@ -89,6 +99,10 @@ function craftRegisterRequest(ctx, salt, blob) {
         "blob": blob,
     };
     bsSpeke._free(buf);
+    if (r !== 0) {
+        throw new Error("got low order point");
+    }
+
     return request;
 }
 
@@ -99,9 +113,6 @@ function craftLoginRequest(ctx, salt, blob, publicKey) {
     const publicKeyPtr = bsSpeke._malloc(32);
     bsSpeke.HEAPU8.set(base64ToArrayBuffer(publicKey), publicKeyPtr);
     const r = bsSpeke._bs_speke_login_key_exchange(ctx.ctx, ephemeralPublic, verifier, publicKeyPtr);
-    if (r !== 0) {
-        throw new Error("got low order point");
-    }
 
     let request = {
         "username": ctx.username,
@@ -112,6 +123,10 @@ function craftLoginRequest(ctx, salt, blob, publicKey) {
 
     bsSpeke._free(ephemeralPublic);
     bsSpeke._free(verifier);
+    if (r !== 0) {
+        throw new Error("got low order point");
+    }
+
     return request;
 }
 

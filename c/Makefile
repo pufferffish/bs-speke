@@ -5,6 +5,11 @@ bs_speke.js:
 		-s ALLOW_MEMORY_GROWTH=1 \
 		-s MODULARIZE=1 \
 		-s EXPORT_ES6=1 \
+		-s NO_FILESYSTEM=1 \
+		-s DEMANGLE_SUPPORT=0 \
+        -s ASSERTIONS=0 \
+        -s TOTAL_MEMORY=16MB \
+        -s BINARYEN_MEM_MAX=2147418112 \
 		-s 'EXPORT_NAME="bs_speke"' \
 		-s SINGLE_FILE=1 \
 		-s AGGRESSIVE_VARIABLE_ELIMINATION=1 \
