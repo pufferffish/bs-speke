@@ -245,7 +245,9 @@ func (server *BSSpekeServer) LoginStep2(username, verifier, blob, ephemeralPubli
 	blake.Write(ephemeralPublicKey)
 	blake.Write(userPublicKey)
 	blake.Write([]byte(server.ServerDomain))
+	blake.Write([]byte{0})
 	blake.Write(username)
+	blake.Write([]byte{0})
 	calculatedVerifier := blake.Sum(nil)
 
 	if userPKError != nil {

@@ -136,8 +136,8 @@ int bs_speke_login_key_exchange(bs_speke_ctx* ctx, uint8_t ephemeral_client_pk[3
   crypto_blake2b_keyed_init(&blake2b, 64, secret, 64);
   crypto_blake2b_update(&blake2b, ephemeral_client_pk, 32); // A
   crypto_blake2b_update(&blake2b, ctx->public_key, 32); // V
-  crypto_blake2b_update(&blake2b, ctx->server_id, strlen(ctx->server_id));
-  crypto_blake2b_update(&blake2b, ctx->username, strlen(ctx->username));
+  crypto_blake2b_update(&blake2b, ctx->server_id, strlen(ctx->server_id)+1);
+  crypto_blake2b_update(&blake2b, ctx->username, strlen(ctx->username)+1);
   crypto_blake2b_final(&blake2b, shared_key_material);
   return 0;
 }
